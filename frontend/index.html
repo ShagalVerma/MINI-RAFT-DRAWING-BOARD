@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Distributed Drawing Board — RAFT</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --sky: #f2f0ff;
+      --card: #ffffff;
+      --border: #e0dcf7;
+      --ink: #1e1b3a;
+      --ink2: #4b4870;
+      --ink3: #9b98b8;
+
+      --leader-bg: #edfaf4;   --leader-ring: #34d399; --leader-text: #065f46; --leader-b: #a7f3d0;
+      --follower-bg: #eff6ff; --follower-ring: #60a5fa; --follower-text: #1e40af; --follower-b: #bfdbfe;
+      --candidate-bg: #fffbeb; --candidate-ring: #fbbf24; --candidate-text: #92400e; --candidate-b: #fde68a;
+      --dead-bg: #f8f7ff;   --dead-ring: #d1d5db; --dead-text: #6b7280; --dead-b: #e5e7eb;
+
+      --purple: #7c3aed; --purple-l: #ede9fe;
+      --green-l: #f0fdf4; --green-b: #bbf7d0; --green-t: #166534;
+      --red-l: #fff1f2;   --red-b: #fecdd3;   --red-t: #9f1239;
+    }
+
+    body {
+      background: var(--sky);
+      background-image:
+        radial-gradient(circle at 10% 15%, #ddd6fe44 0%, transparent 45%),
+        radial-gradient(circle at 90% 85%, #fbcfe844 0%, transparent 45%),
+        radial-gradient(circle at 50% 50%, #bfdbfe22 0%, transparent 60%);
+      font-family: 'Nunito', system-ui, sans-serif;
+      color: var(--ink);
+      padding: 22px 18px 40px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+    }
+
+    /* decorative blobs */
+    body::before {
+      content: '';
+      pointer-events: none;
+      position: fixed;
+      width: 320px; height: 320px;
+      border-radius: 55% 45% 60% 40% / 45% 58% 42% 55%;
+      background: linear-gradient(135deg, #c4b5fd28, #818cf836);
+      top: -70px; right: -70px;
+      animation: blobF 14s ease-in-out infinite alternate;
+    }
+    body::after {
+      content: '';
+      pointer-events: none;
+      position: fixed;
+      width: 240px; height: 240px;
+      border-radius: 60% 40% 45% 55% / 55% 42% 58% 45%;
+      background: linear-gradient(135deg, #fbcfe836, #fda4af28);
+      bottom: -50px; left: -50px;
+      animation: blobF 18s ease-in-out infinite alternate-reverse;
+    }
+    @keyframes blobF { from { transform: scale(1) rotate(0deg); } to { transform: scale(1.1) rotate(10deg); } }
+
+    /* ── HEADER ── */
+    header {
+      width: 100%; max-width: 1180px;
+      background: var(--card);
+      border: 2.5px solid var(--border);
+      border-radius: 24px;
+      padding: 14px 24px;
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px;
+      box-shadow: 0 5px 0 var(--border), 0 10px 30px rgba(100,80,200,0.08);
+      position: relative; z-index: 2;
+    }
+
+    .logo-row { display: flex; align-items: center; gap: 14px; }
+
+    .logo-icon {
+      width: 46px; height: 46px;
+      background: linear-gradient(135deg, #7c3aed, #ec4899);
+      border-radius: 16px;
+      border: 2.5px solid #c4b5fd;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 4px 0 #6d28d9, 0 8px 20px rgba(124,58,237,0.3);
+      flex-shrink: 0;
+    }
+    .logo-icon svg { width: 24px; height: 24px; }
+
+    .logo-text h1 { font-size: 1.05rem; font-weight: 900; color: var(--ink); letter-spacing: -0.2px; line-height: 1.1; }
+    .logo-text p  { font-size: 0.68rem; font-weight: 700; color: var(--ink3); margin-top: 2px; }
+
+    #ws-status {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 0.72rem; font-weight: 800;
+      padding: 8px 18px; border-radius: 40px;
+      border: 2.5px solid var(--border);
+      background: #f8f7ff; color: var(--ink3);
+      transition: all 0.3s ease;
+      box-shadow: 0 3px 0 var(--border);
+    }
+    #ws-status.connected    { background: #d1fae5; border-color: var(--leader-ring); color: var(--leader-text); box-shadow: 0 3px 0 #6ee7b7; }
+    #ws-status.disconnected { background: #fff1f2; border-color: #fca5a5; color: #991b1b; box-shadow: 0 3px 0 #fca5a5; }
+
+    .pdot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: pdotA 2s ease-in-out infinite; flex-shrink: 0; }
+    @keyframes pdotA { 0%,100%{transform:scale(1);opacity:1} 50%{transform:scale(1.5);opacity:0.5} }
+
+    /* ── DASHBOARD ── */
+    #dashboard {
+      width: 100%; max-width: 1180px;
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px;
+    }
+
+    /* Cluster summary strip */
+    #cluster-summary {
+      width: 100%; max-width: 1180px;
+      background: var(--card);
+      border: 2.5px solid var(--border);
+      border-radius: 18px;
+      padding: 12px 16px;
+      display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+      box-shadow: 0 4px 0 var(--border), 0 8px 18px rgba(100,80,200,0.06);
+      font-size: 0.78rem; font-weight: 800; color: var(--ink2);
+    }
+    #cluster-summary .cs-pill {
+      background: #f3f0ff; border: 2px solid var(--border);
+      padding: 5px 12px; border-radius: 40px;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    #cluster-summary .cs-leader   { background: #d1fae5; border-color: var(--leader-b);   color: var(--leader-text); }
+    #cluster-summary .cs-pending  { background: #fef3c7; border-color: var(--candidate-b); color: var(--candidate-text); }
+    #cluster-summary .cs-clients  { background: var(--purple-l); border-color: #c4b5fd;   color: var(--purple); }
+
+    /* Per-card admin buttons */
+    .card-admin { display: flex; gap: 6px; margin-top: 10px; }
+    .admin-btn {
+      flex: 1;
+      font-family: 'Nunito', sans-serif; font-weight: 800; font-size: 0.62rem;
+      padding: 6px 8px; border-radius: 10px; border: 2px solid transparent;
+      cursor: pointer; transition: transform 0.12s;
+      letter-spacing: 0.3px; text-transform: uppercase;
+    }
+    .admin-btn:hover { transform: translateY(-1px); }
+    .admin-btn:active { transform: translateY(1px); }
+    .admin-isolate { background: var(--red-l);   border-color: var(--red-b);   color: var(--red-t);   box-shadow: 0 2px 0 var(--red-b); }
+    .admin-heal    { background: var(--green-l); border-color: var(--green-b); color: var(--green-t); box-shadow: 0 2px 0 var(--green-b); }
+    .partition-tag {
+      display: inline-block; margin-left: 6px;
+      font-size: 0.55rem; font-weight: 900; letter-spacing: 0.5px;
+      padding: 2px 8px; border-radius: 40px;
+      background: #fee2e2; color: #991b1b; border: 1.5px solid #fca5a5;
+    }
+    .partition-tag.hidden { display: none; }
+
+    .replica-card {
+      background: var(--card);
+      border: 2.5px solid var(--border);
+      border-radius: 20px;
+      padding: 16px 16px 14px;
+      box-shadow: 0 5px 0 var(--border), 0 10px 24px rgba(100,80,200,0.06);
+      transition: transform 0.2s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.2s;
+      position: relative; overflow: hidden;
+    }
+    .replica-card::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 5px;
+      border-radius: 18px 18px 0 0; background: var(--dead-ring); transition: background 0.3s;
+    }
+    .replica-card:hover:not(.dead) { transform: translateY(-4px); box-shadow: 0 9px 0 var(--border), 0 18px 36px rgba(100,80,200,0.1); }
+
+    .replica-card.leader    { background: var(--leader-bg);    border-color: var(--leader-b); }
+    .replica-card.leader::before    { background: var(--leader-ring); }
+    .replica-card.follower  { background: var(--follower-bg);  border-color: var(--follower-b); }
+    .replica-card.follower::before  { background: var(--follower-ring); }
+    .replica-card.candidate { background: var(--candidate-bg); border-color: var(--candidate-b); }
+    .replica-card.candidate::before { background: var(--candidate-ring); }
+    .replica-card.dead      { background: var(--dead-bg); opacity: 0.65; }
+
+    .card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+
+    .node-row { display: flex; align-items: center; gap: 10px; }
+    .node-emoji {
+      width: 38px; height: 38px; border-radius: 12px;
+      background: #f3f0ff; border: 2px solid var(--dead-b);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; box-shadow: 0 3px 0 var(--dead-b);
+      transition: all 0.3s; flex-shrink: 0;
+    }
+    .leader    .node-emoji { background: #d1fae5; border-color: var(--leader-b);    box-shadow: 0 3px 0 #6ee7b7; }
+    .follower  .node-emoji { background: #dbeafe; border-color: var(--follower-b);  box-shadow: 0 3px 0 #93c5fd; }
+    .candidate .node-emoji { background: #fef3c7; border-color: var(--candidate-b); box-shadow: 0 3px 0 #fcd34d; }
+
+    .node-name { font-size: 0.88rem; font-weight: 800; color: var(--ink); }
+    .node-sub  { font-size: 0.63rem; font-weight: 700; color: var(--ink3); margin-top: 1px; }
+
+    .role-badge {
+      font-size: 0.6rem; font-weight: 900; letter-spacing: 0.2px;
+      padding: 5px 11px; border-radius: 40px; border: 2px solid transparent;
+    }
+    .badge-leader    { background: #d1fae5; color: var(--leader-text);    border-color: var(--leader-b); }
+    .badge-follower  { background: #dbeafe; color: var(--follower-text);  border-color: var(--follower-b); }
+    .badge-candidate { background: #fef3c7; color: var(--candidate-text); border-color: var(--candidate-b); }
+    .badge-dead      { background: #f3f4f6; color: var(--dead-text);      border-color: var(--dead-b); }
+
+    .card-stats { display: flex; gap: 8px; }
+    .sc {
+      flex: 1; background: rgba(255,255,255,0.75);
+      border: 2px solid var(--border); border-radius: 12px;
+      padding: 8px 4px; text-align: center;
+    }
+    .leader   .sc { border-color: var(--leader-b); }
+    .follower .sc { border-color: var(--follower-b); }
+    .candidate .sc { border-color: var(--candidate-b); }
+
+    .sc-label { font-size: 0.55rem; font-weight: 800; color: var(--ink3); text-transform: uppercase; letter-spacing: 0.8px; display: block; margin-bottom: 3px; }
+    .sc-val   { font-size: 0.92rem; font-weight: 900; color: var(--ink); display: block; }
+    .leader   .sc-val { color: var(--leader-text); }
+    .follower .sc-val { color: var(--follower-text); }
+    .candidate .sc-val { color: var(--candidate-text); }
+    .dead .sc-val { color: var(--dead-text); }
+
+    /* ── CANVAS ── */
+    #canvas-wrap {
+      width: 100%; max-width: 1180px;
+      background: var(--card);
+      border: 2.5px solid var(--border);
+      border-radius: 24px; overflow: hidden;
+      box-shadow: 0 6px 0 var(--border), 0 14px 44px rgba(100,80,200,0.09);
+      position: relative; z-index: 2;
+    }
+
+    #toolbar {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      padding: 13px 18px;
+      background: #faf9ff;
+      border-bottom: 2px solid var(--border);
+    }
+
+    .tgroup {
+      display: flex; align-items: center; gap: 8px;
+      background: #fff; border: 2px solid var(--border);
+      border-radius: 14px; padding: 6px 14px;
+      box-shadow: 0 2px 0 var(--border);
+    }
+    .tlbl { font-size: 0.68rem; font-weight: 800; color: var(--ink3); }
+
+    input[type="color"] {
+      width: 28px; height: 28px; border: 2px solid var(--border);
+      border-radius: 8px; cursor: pointer; background: none; padding: 2px;
+    }
+    input[type="range"] { width: 80px; accent-color: var(--purple); }
+
+    .tbtn {
+      font-family: 'Nunito', sans-serif; font-weight: 800; font-size: 0.72rem;
+      padding: 8px 16px; border-radius: 12px; border: 2px solid transparent;
+      cursor: pointer; transition: transform 0.15s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.15s;
+      display: inline-flex; align-items: center; gap: 5px;
+    }
+    .tbtn:hover  { transform: translateY(-2px); }
+    .tbtn:active { transform: translateY(1px); }
+    .tbtn-erase { background: var(--green-l); border-color: var(--green-b); color: var(--green-t); box-shadow: 0 3px 0 var(--green-b); }
+    .tbtn-clear { background: var(--red-l);   border-color: var(--red-b);   color: var(--red-t);   box-shadow: 0 3px 0 var(--red-b); }
+
+    .thint {
+      margin-left: auto; font-size: 0.68rem; font-weight: 800; color: #7c3aed;
+      background: var(--purple-l); border: 2px solid #c4b5fd;
+      border-radius: 40px; padding: 5px 14px;
+    }
+
+    canvas {
+      display: block; width: 100%;
+      cursor: crosshair; background: #fff;
+    }
+
+    footer {
+      font-size: 0.68rem; font-weight: 700; color: var(--ink3);
+      text-align: center; padding: 6px;
+      width: 100%; max-width: 1180px;
+    }
+
+    @media (max-width: 760px) {
+      #dashboard { grid-template-columns: 1fr; }
+      .thint { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo-row">
+    <div class="logo-icon">
+      <svg viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="10" r="3.5" fill="white" opacity="0.9"/>
+        <circle cx="4"  cy="20" r="2.5" fill="white" opacity="0.75"/>
+        <circle cx="20" cy="20" r="2.5" fill="white" opacity="0.75"/>
+        <path d="M12 13.5 L4.5 18" stroke="white" stroke-width="1.6" stroke-dasharray="2.5 2" stroke-linecap="round"/>
+        <path d="M12 13.5 L19.5 18" stroke="white" stroke-width="1.6" stroke-dasharray="2.5 2" stroke-linecap="round"/>
+        <path d="M5 7 Q12 1 19 7" stroke="white" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="logo-text">
+      <h1>Distributed Drawing Board</h1>
+      <p>✦ Mini-RAFT Consensus &nbsp;·&nbsp; <span id="cluster-label">Cluster</span></p>
+    </div>
+  </div>
+  <div id="ws-status">
+    <span class="pdot"></span>
+    <span id="ws-text">Connecting…</span>
+  </div>
+</header>
+
+<div id="cluster-summary">
+  <span class="cs-pill cs-leader">👑 Leader: <span id="cs-leader">—</span></span>
+  <span class="cs-pill">📐 Cluster size: <span id="cs-size">—</span></span>
+  <span class="cs-pill">🎯 Majority: <span id="cs-majority">—</span></span>
+  <span class="cs-pill cs-clients">👥 Clients: <span id="cs-clients">—</span></span>
+  <span class="cs-pill cs-pending">⏳ Pending strokes: <span id="cs-pending">—</span></span>
+</div>
+
+<!-- Dashboard cards are rendered dynamically from GET /replicas (BONUS:
+     supports an arbitrary cluster size — adding a 4th, 5th, … replica only
+     requires a docker-compose change, no markup edits.) -->
+<div id="dashboard"></div>
+
+<div id="canvas-wrap">
+  <div id="toolbar">
+    <div class="tgroup">
+      <span class="tlbl">🎨 Color</span>
+      <input type="color" id="color" value="#1e293b">
+    </div>
+    <div class="tgroup">
+      <span class="tlbl">✏️ Size</span>
+      <input type="range" id="size" min="2" max="30" value="4">
+    </div>
+    <button class="tbtn tbtn-erase" id="eraserBtn">🧽 Eraser</button>
+    <button class="tbtn tbtn-erase" id="undoBtn" title="Undo your last stroke (Ctrl+Z)">↶ Undo</button>
+    <button class="tbtn tbtn-erase" id="redoBtn" title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
+    <button class="tbtn tbtn-clear" id="clearBtn">🗑️ Clear All</button>
+    <span class="thint">✍️ Draw anywhere to sync</span>
+  </div>
+  <canvas id="canvas" width="1000" height="540"></canvas>
+</div>
+
+<footer>Made with ☕ &nbsp;·&nbsp; RAFT consensus &nbsp;·&nbsp; fault-tolerant replication</footer>
+
+<script>
+  // ── DOM handles ────────────────────────────────────────────────────────────
+  const canvas       = document.getElementById('canvas');
+  const ctx          = canvas.getContext('2d');
+  const colorPicker  = document.getElementById('color');
+  const sizePicker   = document.getElementById('size');
+  const wsStatusSpan = document.getElementById('ws-text');
+  const wsStatusDiv  = document.getElementById('ws-status');
+  const dashboardEl  = document.getElementById('dashboard');
+
+  let drawing = false, lastX = 0, lastY = 0, eraserMode = false;
+
+  // ── URL helpers (host-agnostic — works for localhost & deployed VM) ────────
+  const HOST       = window.location.hostname || 'localhost';
+  const GATEWAY_HTTP = `http://${HOST}:8081`;
+  function gatewayWsUrl() { return `ws://${HOST}:8080`; }
+  function replicaHttpUrl(port) { return `http://${HOST}:${port}`; }
+
+  function setEraser() { eraserMode = true; colorPicker.value = '#ffffff'; }
+  colorPicker.addEventListener('input', () => { eraserMode = false; });
+  document.getElementById('eraserBtn').onclick = () => setEraser();
+  document.getElementById('clearBtn').onclick  = () => clearCanvas();
+  document.getElementById('undoBtn').onclick   = () => undoMine();
+  document.getElementById('redoBtn').onclick   = () => redoMine();
+
+  document.addEventListener('keydown', (e) => {
+    const key = (e.key || '').toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && key === 'z' && !e.shiftKey) { e.preventDefault(); undoMine(); }
+    else if ((e.ctrlKey || e.metaKey) && (key === 'y' || (key === 'z' && e.shiftKey))) { e.preventDefault(); redoMine(); }
+  });
+
+  // ── Vector-based undo/redo via log compensation (BONUS) ───────────────────
+  // Every stroke carries a unique strokeId. Undo emits a compensating event
+  // {type:'undo', strokeId} that the leader replicates through the RAFT log
+  // and broadcasts to every connected client; clients flip the visibility bit
+  // and redraw. Redo is symmetric. Both 'undo' and 'redo' live in the gateway
+  // canvasLog so a tab opened *after* an undo sees the same final canvas.
+  const CLIENT_ID = 'c-' + Math.random().toString(36).slice(2, 10);
+  let strokeCounter = 0;
+  let segCounter    = 0;
+  const newStrokeId = () => `${CLIENT_ID}-s${++strokeCounter}`;
+  const newSegId    = () => `${CLIENT_ID}-g${++segCounter}`;
+
+  // A "stroke" is a *group* of segments emitted by one pointer-down → pointer-up
+  // gesture; every segment in the group shares the same strokeId. We need both:
+  //   • per-segment dedupe (so the WS echo of our own segments doesn't redraw)
+  //   • per-stroke visibility (so undo can hide an entire group at once)
+  //
+  // strokeOrder is the ordered list of stroke groups (used by redrawAll).
+  // strokeMap   maps strokeId → stroke group for O(1) visibility flips.
+  // seenSegIds  is the dedupe set keyed on the unique per-segment id.
+  const strokeOrder = [];
+  const strokeMap   = new Map();
+  const seenSegIds  = new Set();
+  const myUndoStack = []; // strokeIds I drew, top = most recent visible
+  const myRedoStack = []; // strokeIds I undid, top = most recent undone
+
+  // Track an incoming segment. Returns true if it was newly drawn (caller can
+  // use that signal to decide whether to call drawSegment), false if it was a
+  // duplicate echo or belonged to a hidden (undone) stroke.
+  function trackSegment(seg) {
+    if (!seg.strokeId) return false;
+    if (seg.segId && seenSegIds.has(seg.segId)) return false; // duplicate echo
+    if (seg.segId) seenSegIds.add(seg.segId);
+
+    let stroke = strokeMap.get(seg.strokeId);
+    if (!stroke) {
+      stroke = {
+        strokeId: seg.strokeId,
+        clientId: seg.clientId,
+        visible : true,
+        segments: [],
+      };
+      strokeMap.set(seg.strokeId, stroke);
+      strokeOrder.push(stroke);
+      // Only push to my undo stack the first time we see one of *our* strokes.
+      if (seg.clientId === CLIENT_ID) myUndoStack.push(seg.strokeId);
+    }
+    stroke.segments.push(seg);
+    return stroke.visible;
+  }
+
+  function applyUndo(strokeId) {
+    const s = strokeMap.get(strokeId);
+    if (s && s.visible) { s.visible = false; redrawAll(); }
+  }
+  function applyRedo(strokeId) {
+    const s = strokeMap.get(strokeId);
+    if (s && !s.visible) { s.visible = true; redrawAll(); }
+  }
+
+  function redrawAll() {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    for (const stroke of strokeOrder) {
+      if (!stroke.visible) continue;
+      for (const seg of stroke.segments) drawSegment(seg);
+    }
+  }
+
+  function drawSegment(s) {
+    ctx.beginPath(); ctx.moveTo(s.x0, s.y0); ctx.lineTo(s.x1, s.y1);
+    ctx.strokeStyle = s.color; ctx.lineWidth = s.size;
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.stroke();
+  }
+
+  function undoMine() {
+    while (myUndoStack.length) {
+      const id = myUndoStack.pop();
+      const s  = strokeMap.get(id);
+      if (!s || !s.visible) continue;
+      myRedoStack.push(id);
+      s.visible = false; redrawAll();
+      sendWs({ type: 'undo', strokeId: id, clientId: CLIENT_ID, ts: Date.now() });
+      return;
+    }
+  }
+  function redoMine() {
+    while (myRedoStack.length) {
+      const id = myRedoStack.pop();
+      const s  = strokeMap.get(id);
+      if (!s || s.visible) continue;
+      myUndoStack.push(id);
+      s.visible = true; redrawAll();
+      sendWs({ type: 'redo', strokeId: id, clientId: CLIENT_ID, ts: Date.now() });
+      return;
+    }
+  }
+
+  // ── WebSocket to gateway ──────────────────────────────────────────────────
+  let ws, reconnectAttempts = 0, heartbeatInterval = null;
+  function sendWs(obj) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
+
+  function connectWebSocket() {
+    ws = new WebSocket(gatewayWsUrl());
+    if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+    ws.onopen = () => {
+      wsStatusSpan && (wsStatusSpan.textContent = 'Connected');
+      wsStatusDiv.className = 'connected';
+      reconnectAttempts = 0;
+      heartbeatInterval = setInterval(() => sendWs({ type: 'ping' }), 30000);
+    };
+    ws.onclose = () => {
+      wsStatusSpan && (wsStatusSpan.textContent = 'Reconnecting…');
+      wsStatusDiv.className = 'disconnected';
+      if (heartbeatInterval) { clearInterval(heartbeatInterval); heartbeatInterval = null; }
+      reconnectAttempts++;
+      setTimeout(connectWebSocket, Math.min(8000, 500 * Math.pow(2, reconnectAttempts)));
+    };
+    ws.onerror = () => { wsStatusSpan && (wsStatusSpan.textContent = 'Error'); wsStatusDiv.className = 'disconnected'; };
+    ws.onmessage = ({ data }) => {
+      try {
+        const msg = JSON.parse(data);
+        if (msg.type === 'pong') return;
+        if (msg.type === 'clear') {
+          strokeOrder.length = 0; strokeMap.clear(); seenSegIds.clear();
+          myUndoStack.length = 0; myRedoStack.length = 0;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+          return;
+        }
+        if (msg.type === 'undo') { applyUndo(msg.strokeId); return; }
+        if (msg.type === 'redo') { applyRedo(msg.strokeId); return; }
+        // Plain stroke segment. trackSegment dedupes echoes via segId and
+        // returns true only when a fresh, visible segment should be painted.
+        if (trackSegment(msg)) drawSegment(msg);
+      } catch (_) {}
+    };
+  }
+  connectWebSocket();
+
+  // ── Drawing → ws ──────────────────────────────────────────────────────────
+  // Each pointer-down opens a new "stroke" (group of segments sharing a
+  // strokeId). All segments in the same drag share that ID so undo removes
+  // the entire stroke as a single unit.
+  let currentStrokeId = null;
+
+  function emitSegment(x0, y0, x1, y1) {
+    const seg = {
+      x0, y0, x1, y1,
+      color   : colorPicker.value,
+      size    : parseInt(sizePicker.value),
+      strokeId: currentStrokeId,
+      segId   : newSegId(),
+      clientId: CLIENT_ID,
+    };
+    drawSegment(seg);
+    trackSegment(seg);
+    sendWs(seg);
+  }
+
+  function getPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height;
+    let clientX, clientY;
+    if (e.touches) { clientX = e.touches[0].clientX; clientY = e.touches[0].clientY; e.preventDefault(); }
+    else { clientX = e.clientX; clientY = e.clientY; }
+    return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+  }
+
+  canvas.addEventListener('pointerdown', (e) => {
+    drawing = true;
+    currentStrokeId = newStrokeId();
+    myRedoStack.length = 0; // new edit invalidates redo history
+    const p = getPos(e); lastX = p.x; lastY = p.y;
+    canvas.setPointerCapture(e.pointerId); e.preventDefault();
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!drawing) return;
+    e.preventDefault();
+    const p = getPos(e);
+    emitSegment(lastX, lastY, p.x, p.y);
+    lastX = p.x; lastY = p.y;
+  });
+  canvas.addEventListener('pointerup',    () => { drawing = false; currentStrokeId = null; });
+  canvas.addEventListener('pointerleave', () => { drawing = false; currentStrokeId = null; });
+
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect(), t = e.touches[0];
+    const sx = canvas.width/rect.width, sy = canvas.height/rect.height;
+    lastX = (t.clientX - rect.left)*sx; lastY = (t.clientY - rect.top)*sy;
+    drawing = true;
+    currentStrokeId = newStrokeId();
+    myRedoStack.length = 0;
+  });
+  canvas.addEventListener('touchmove', (e) => {
+    if (!drawing) return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect(), t = e.touches[0];
+    const sx = canvas.width/rect.width, sy = canvas.height/rect.height;
+    const cx = (t.clientX-rect.left)*sx, cy = (t.clientY-rect.top)*sy;
+    emitSegment(lastX, lastY, cx, cy);
+    lastX = cx; lastY = cy;
+  });
+  canvas.addEventListener('touchend', () => { drawing = false; currentStrokeId = null; });
+
+  function clearCanvas() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    strokeOrder.length = 0; strokeMap.clear(); seenSegIds.clear();
+    myUndoStack.length = 0; myRedoStack.length = 0;
+    sendWs({ type: 'clear', timestamp: Date.now(), clientId: CLIENT_ID });
+  }
+
+  // ── Replica dashboard (BONUS: dynamic, supports any cluster size) ─────────
+  const ICONS  = { leader: '👑', follower: '🤝', candidate: '🗳️', dead: '💤', unknown: '🖥️' };
+  const LABELS = { leader: 'Leader', follower: 'Follower', candidate: 'Candidate', dead: 'Dead', unknown: 'Unknown' };
+  let REPLICAS = []; // [{id, host, port, index}, ...]
+
+  function renderDashboardSkeleton() {
+    dashboardEl.innerHTML = '';
+    REPLICAS.forEach(r => {
+      const card = document.createElement('div');
+      card.className = 'replica-card dead';
+      card.id = `card-${r.id}`;
+      card.innerHTML = `
+        <div class="card-top">
+          <div class="node-row">
+            <div class="node-emoji">🖥️</div>
+            <div>
+              <div class="node-name">Replica ${r.index} <span class="partition-tag hidden" data-tag>PARTITIONED</span></div>
+              <div class="node-sub">${r.host}:${r.port}</div>
+            </div>
+          </div>
+          <span class="role-badge badge-dead">—</span>
+        </div>
+        <div class="card-stats">
+          <div class="sc"><span class="sc-label">Term</span><span class="sc-val" data-term>—</span></div>
+          <div class="sc"><span class="sc-label">Log</span><span class="sc-val" data-log>—</span></div>
+          <div class="sc"><span class="sc-label">Commit</span><span class="sc-val" data-commit>—</span></div>
+        </div>
+        <div class="card-admin">
+          <button class="admin-btn admin-isolate" data-isolate>⛔ Isolate</button>
+          <button class="admin-btn admin-heal"    data-heal>🌐 Heal</button>
+        </div>
+      `;
+      card.querySelector('[data-isolate]').onclick = () => isolateReplica(r);
+      card.querySelector('[data-heal]').onclick    = () => healReplica(r);
+      dashboardEl.appendChild(card);
+    });
+    document.getElementById('cluster-label').textContent = `${REPLICAS.length}-Node Cluster`;
+    document.getElementById('cs-size').textContent = REPLICAS.length;
+    document.getElementById('cs-majority').textContent = Math.floor(REPLICAS.length / 2) + 1;
+  }
+
+  async function pollReplica(r) {
+    const card  = document.getElementById(`card-${r.id}`);
+    if (!card) return null;
+    const badge = card.querySelector('.role-badge');
+    const emoji = card.querySelector('.node-emoji');
+    const tag   = card.querySelector('[data-tag]');
+    try {
+      const res  = await fetch(`${replicaHttpUrl(r.port)}/status`, { signal: AbortSignal.timeout(800) });
+      const data = await res.json();
+      const role = data.role || 'unknown';
+      const rc   = (role === 'leader' || role === 'follower' || role === 'candidate') ? role : 'dead';
+      card.className = `replica-card ${rc}`;
+      if (badge) { badge.className = `role-badge badge-${rc}`; badge.textContent = LABELS[rc] || rc; }
+      if (emoji) emoji.textContent = ICONS[rc] || '🖥️';
+      card.querySelector('[data-term]').textContent   = data.term ?? '—';
+      card.querySelector('[data-log]').textContent    = data.logLength ?? '—';
+      card.querySelector('[data-commit]').textContent = data.commitIndex ?? '—';
+      const blocked = (data.blockedPeers || []).length > 0;
+      if (tag) tag.classList.toggle('hidden', !blocked);
+      return data;
+    } catch (_) {
+      card.className = 'replica-card dead';
+      if (badge) { badge.className = 'role-badge badge-dead'; badge.textContent = 'Dead'; }
+      if (emoji) emoji.textContent = '💤';
+      ['term','log','commit'].forEach(k => { card.querySelector(`[data-${k}]`).textContent = '—'; });
+      if (tag) tag.classList.add('hidden');
+      return null;
+    }
+  }
+
+  async function pollAllReplicas() {
+    const results = await Promise.all(REPLICAS.map(pollReplica));
+    const leader  = results.find(d => d && d.role === 'leader');
+    document.getElementById('cs-leader').textContent = leader ? leader.id : '— (electing)';
+  }
+
+  async function pollClusterSummary() {
+    try {
+      const r = await fetch(`${GATEWAY_HTTP}/health`, { signal: AbortSignal.timeout(800) });
+      const d = await r.json();
+      document.getElementById('cs-clients').textContent = d.clients ?? '—';
+      document.getElementById('cs-pending').textContent = d.pendingStrokes ?? '—';
+    } catch (_) {
+      document.getElementById('cs-clients').textContent = '—';
+      document.getElementById('cs-pending').textContent = '—';
+    }
+  }
+
+  // ── Partition controls (BONUS: split-brain demo) ──────────────────────────
+  // To meaningfully isolate a replica, both directions of every link must be
+  // dropped. We POST to *every* replica: the target gets all peers blocked,
+  // and each peer adds the target to its own block list. "Heal" reverses it.
+  async function postPartition(host, port, body) {
+    try {
+      await fetch(`${replicaHttpUrl(port)}/admin/partition`, {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify(body),
+        signal : AbortSignal.timeout(1500),
+      });
+    } catch (e) { console.warn(`partition POST ${host} failed`, e); }
+  }
+
+  async function isolateReplica(target) {
+    const others = REPLICAS.filter(r => r.id !== target.id);
+    await Promise.all([
+      postPartition(target.host, target.port, { block: others.map(r => r.id) }),
+      ...others.map(r => postPartition(r.host, r.port, { block: [target.id] })),
+    ]);
+    pollAllReplicas();
+  }
+
+  async function healReplica(target) {
+    // Heal *all* edges by resetting every replica's block list. Simple and
+    // matches the demo intent: one click restores full connectivity.
+    await Promise.all(REPLICAS.map(r => postPartition(r.host, r.port, { reset: true })));
+    pollAllReplicas();
+  }
+
+  // ── Bootstrap: discover replicas from gateway, then start polling ─────────
+  async function bootstrap() {
+    try {
+      const res  = await fetch(`${GATEWAY_HTTP}/replicas`, { signal: AbortSignal.timeout(2000) });
+      const data = await res.json();
+      REPLICAS = data.replicas || [];
+    } catch (_) {
+      // Fallback to the canonical 4-node layout if the gateway hasn't started.
+      REPLICAS = [
+        { id: 'replica1', host: HOST, port: 4001, index: 1 },
+        { id: 'replica2', host: HOST, port: 4002, index: 2 },
+        { id: 'replica3', host: HOST, port: 4003, index: 3 },
+        { id: 'replica4', host: HOST, port: 4004, index: 4 },
+      ];
+    }
+    // The gateway returns docker hostnames (replica1, replica2, …) which are
+    // not browser-resolvable. Force every entry to use the user-facing host.
+    REPLICAS = REPLICAS.map(r => ({ ...r, host: HOST }));
+    renderDashboardSkeleton();
+    pollAllReplicas();
+    pollClusterSummary();
+    setInterval(pollAllReplicas,    1500);
+    setInterval(pollClusterSummary, 1500);
+  }
+  bootstrap();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  colorPicker.value = '#1e293b';
+</script>
+</body>
+</html>

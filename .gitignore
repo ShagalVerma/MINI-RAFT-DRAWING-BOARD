@@ -1,0 +1,8 @@
+*.md
+*.pdf
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Local Claude settings
+.claude/
